@@ -1,0 +1,1087 @@
+<html>
+<head><title>JavaScript Template Attack</title></head>
+<body>
+<h1>JavaScript Template Attack</h1>
+<div id="log" style="font-family: monospace;">
+    <script type="text/javascript">
+        document.getElementById("log").innerHTML = "[" + new Date().toLocaleTimeString() + "] Running, please wait...";
+    </script>
+</div>
+<canvas id="glCanvas" width="120" height="32"></canvas>
+<script type="text/javascript">
+    (function (target) {
+        var max_depth = 10;
+        var start;
+        var check_hashes = false;
+        var logconsole = "";
+
+        var dups = 0;
+
+        let savedParams = {};
+        let envBefore = {};
+
+        let skippedFunctions = 0;
+
+        let notAFunction = 0;
+        let functionCounter = 0;
+
+        var LOG_DEBUG = 1, LOG_INFO = 2, LOG_WARNING = 4, LOG_ERROR = 8, LOG_RESULT = 16;
+
+        const exclude = [
+            'window.history.pushState',
+            'window.history.back',
+            'window.history.forward',
+            'window.history.go',
+            'window.location',
+            'window.location.reload',
+            'window.location.replace',
+            'window.location.href',
+            'window.location.assign',
+            'window.alert',
+            'window.confirm',
+            'window.prompt',
+            'window.print',
+            'window.external.AddSearchProvider',
+            'window.open',
+            'window.close',
+            'window.stop',
+            'window.focus',
+            'window.setTimeout',
+            'window.setInterval',
+            'window.console.profile',
+            'window.console.profileEnd',
+            'window.console.clear',
+            'window.document.open',
+            'window.document.close',
+            'window.document.clear',
+            'window.canvas.offsetParent.remove',
+            'window.canvas.replaceWith',
+            'window.canvas.remove',
+            'window.canvas.previousElementSibling.replaceWith',
+            'window.canvas.previousElementSibling.remove',
+            'window.canvas.offsetParent.replaceWith',
+            'window.canvas.offsetParent.remove',
+            'window.canvas.offsetParent.parentNode.replaceWith',
+            'window.canvas.offsetParent.parentNode.remove',
+            'window.navigator.storage.persist',
+            'window.navigator.mediaDevices.getDisplayMedia',
+            'window.navigator.sendBeacon',
+            'window.document.write',
+            'window.document.writeln',
+            'window.document.body.replaceWith',
+            'window.document.body.remove',
+            'window.document.documentElement.replaceWith',
+            'window.document.documentElement.remove',
+            //Instabile Properties
+            'window.document.lastModified',
+            'window.hasFocus',
+            'window.document.hasFocus',
+            'window.chrome.loadTime',
+            'window.chrome.loadTimes',
+            'window.navigator.connection.valueOf',
+            'window.navigator.scheduling.isInputPending',
+            'window.canvas.previousElementSibling.firstChild.cloneNode',
+            'window.AudioContext'
+        ];
+
+        function hash(o) {
+            return JSON.stringify(o);
+        }
+
+        function skipFunc(funcName) {
+            if(funcName.match(/^window\.canvas\..*(replaceWith|remove|replaceChildren)$/)) {
+                //console.log('regex: ' + funcName);
+                skippedFunctions++;
+                return true;
+            }
+
+            if(funcName.match(/(innerHTML|innerText|textContent|wholeText|replaceChildren|runFunc|bruteForce)$/)) {
+                skippedFunctions++;
+                return true
+            }
+
+            if(funcName.match(/^window\.canvas\..*(textContent|wholeText|data|text)$/)) {
+                skippedFunctions++;
+                return true;
+            }
+
+            if(funcName.match(/^window\.history\..*/)) {
+                skippedFunctions++;
+                return true;
+            }
+
+            if(funcName.match(/^window\.performance\..*/)) {//Keine stabilen Ergebnisse
+                skippedFunctions++;
+                return true;
+            }
+
+            if(funcName.match(/^window\.console\.memory\..*/)) {//Keine stabilen Ergebnisse
+                skippedFunctions++;
+                return true;
+            }
+
+            let exErg = exclude.indexOf(funcName)>=0;
+            //console.debug('Exclude: ' + funcName + ': ' + exErg);
+            if(exErg) {
+                skippedFunctions++;
+                return true;
+            }
+
+            return false;
+        }
+
+        //Erkennung von Funktionen, die Ausführung stören
+        function checkBroken(item) {
+            if (!(document.getElementById('log'))) {
+                console.error(item + ' broke the page!');
+                return true;
+            }
+            if(!(document.getElementById('glCanvas'))) {
+                console.error(item + ' broke the page!');
+                return true;
+            }
+
+            if(window.location.pathname!='/record' && window.location.pathname!='/praxisprojekt/jta.html') {
+                console.error(item + ' broke the page!');
+                return true;
+            }
+
+            return false;
+        }
+
+        /****************************
+         Bruteforce Arguments
+         *****************************/
+        function bruteforceArgs(func, execString, args, root_name) {
+            const paramList= ["5","'string'","true","new Object","new Array"];
+            let argString = '';
+            let mString =  '';
+            let result;
+
+            if(savedParams.hasOwnProperty(func)) {
+                result = runFunc(root_name, func, execString, savedParams[func]);
+                if(result.success || result.skip) {
+                    return result;
+                } else {
+                    console.debug('Saved params didn\'t work on ' + func);
+                }
+            }
+
+
+
+            if(args > 4)
+                return {
+                    success: false,
+                    message: 'Too many arguments expected (' + args + ')',
+                    exec: execString,
+                    args: argString,
+                    diff: {},
+                    diffTime: 0,
+                    time: null
+                };
+
+            for(let item of paramList) {
+                argString = item;
+
+                if(args==1||args==0) {
+                    result = runFunc(root_name, func, execString, argString);
+                    if(result.success || result.skip)
+                        return result;
+                }
+
+                for(let item2 of paramList) {
+
+                    argString = item + ', ' + item2;
+
+                    if(args==2||args==0) {
+                        result = runFunc(root_name, func, execString, argString);
+                        if(result.success || result.skip)
+                            return result;
+                    }
+
+
+                    for(let item3 of paramList) {
+
+                        argString = item + ', ' + item2 + ', ' + item3;
+
+                        if(args==3||args==0) {
+                            result = runFunc(root_name, func, execString, argString);
+                            if(result.success || result.skip)
+                                return result;
+                        }
+
+                        for(let item4 of paramList) {
+
+                            argString = item + ', ' + item2 + ', ' + item3 + ',' + item4;
+
+                            if(args==4||args==0) {
+                                result = runFunc(root_name, func, execString, argString);
+                                if(result.success || result.skip)
+                                    return result;
+                            }
+                        }
+                    }
+                }
+            }
+
+            return {
+                success: false,
+                message: result.message,
+                exec: execString,
+                args: argString,
+                diff: {},
+                diffTime: 0,
+                time: result.time
+            };
+        }
+
+        /****************************
+         Argument Oracle
+         *****************************/
+        function argOracle(func, mString) {
+            let execString = func;
+            let argCount = 0;
+
+            //Behandlung New
+            if(mString.match(/('new' is required)/g) || //SpiderMonkey
+                mString.match(/(requires 'new')/g) || //SpiderMonkey
+                mString.match(/(without new is forbidden)/g) ||//SpiderMonkey
+                mString.match(/(Please use the 'new' operator)/g)) {//v8
+                    execString = 'new ' + execString;
+            }
+
+            try {
+                argCount = eval(func + '.length');
+            } catch(e) {
+                if(mString.match(/(requires at least \d+ (argument|arguments), but only \d+ were passed)/g) ||//SpiderMonkey: Firefox
+                    mString.match(/(At least \d+ (argument|arguments) required, but only \d+ passed)/g) ||//SpiderMonkey: Firefox
+                    mString.match(/(\d+ (argument|arguments) required, but only \d+ present.)/g)) {//V8: Chrome, Opera
+                        argCount = mString.match(/( \d *)/g);
+                        argCount = parseInt(argCount[0]);
+                }
+            }
+
+            //Andere Fehler sind uns egal
+            //Werden erst einmal gebruteforced
+
+
+            return {
+                execString: execString,
+                argCount: argCount
+            };
+        }
+
+        /****************************
+         Find differences in environment
+         *****************************/
+        function findDiff(root_name) {
+            if(!root_name)//No difference check needed for 0th scan. Skip with false
+                return {};
+
+            let root = eval(root_name);
+            let envAfter = {};
+            scan(root, root_name, envAfter, 0);
+
+            //https://stackoverflow.com/a/8432188 by Gabriel Gartz (Licensed under BSD)
+            const result = {};
+            if (Object.is(envBefore, envAfter)) {
+                return undefined;
+            }
+            if (!envAfter || typeof envAfter !== 'object') {
+                return envAfter;
+            }
+            Object.keys(envBefore || {}).concat(Object.keys(envAfter || {})).forEach(key => {
+                if(envAfter[key] !== envBefore[key] && !Object.is(envBefore[key], envAfter[key])) {
+                    //exclude unstable elements
+                    if(!(key.match(/^window\.(performance|console)\.memory\..*/)) &&
+                        (!(key.match(/^window\.document\.lastModified/))))
+                        result[key] = envAfter[key];
+                }
+                if(typeof envAfter[key] === 'object' && typeof envBefore[key] === 'object') {
+                    const value = diff(envBefore[key], envAfter[key]);
+                    if (value !== undefined &&
+                        (!(key.match(/^window\.(performance|console)\.memory\..*/))) &&
+                        (!(key.match(/^window\.document\.lastModified*/)))) {
+                        result[key] = value;
+                    }
+                }
+            });
+
+            envBefore = envAfter;
+            return result;
+        }
+
+
+        function log(level, o) {
+            var col = "black";
+            switch (level) {
+                case LOG_DEBUG:
+                    col = "gray";
+                    break;
+                case LOG_INFO:
+                    col = "black";
+                    break;
+                case LOG_WARNING:
+                    col = "orange";
+                    break;
+                case LOG_ERROR:
+                    col = "red";
+                    break;
+                case LOG_RESULT:
+                    col = "blue";
+                    break;
+            }
+
+            logconsole += "<span style='color: " + col + ";'>[" + new Date().toLocaleTimeString() + "] " + o + "</span><br />\n";
+
+        }
+
+        function add_webgl() {
+            log(LOG_INFO, "Adding WebGL object");
+            window.canvas = document.querySelector("#glCanvas");
+            window.gl = window.canvas.getContext("webgl");
+
+            if (window.gl != null) {
+                var x = 0, y = 0;
+                for (var i in window.gl) {
+                    if (i.toUpperCase() == i) {
+                        x++;
+                    } else y++;
+                }
+                log(LOG_DEBUG, "[WebGL] " + x + " constants");
+                log(LOG_DEBUG, "[WebGL] " + (x + y) + " total properties in WebGL");
+
+                window.wgl = {};
+                for (var i in window.gl) {
+                    try {
+                        window.wgl[i] = gl.getParameter(gl[i]);
+                    } catch (e) {
+                    }
+                }
+
+                /*var glext = [
+                    "ANGLE_instanced_arrays",
+                    "EXT_blend_minmax",
+                    "EXT_color_buffer_float",
+                    "EXT_color_buffer_half_float",
+                    "EXT_disjoint_timer_query",
+                    "EXT_float_blend",
+                    "EXT_frag_depth",
+                    "EXT_shader_texture_lod",
+                    "EXT_sRGB",
+                    "EXT_texture_compression_bptc",
+                    "EXT_texture_compression_rgtc",
+                    "EXT_texture_filter_anisotropic",
+                    "EXT_texture_norm16",
+                    "KHR_parallel_shader_compile",
+                    "OES_element_index_uint",
+                    "OES_fbo_render_mipmap",
+                    "OES_standard_derivatives",
+                    "OES_texture_float",
+                    "OES_texture_float_linear",
+                    "OES_texture_half_float",
+                    "OES_texture_half_float_linear",
+                    "OES_vertex_array_object",
+                    "OVR_multiview2",
+                    "WEBGL_color_buffer_float",
+                    "WEBGL_compressed_texture_astc",
+                    "WEBGL_compressed_texture_atc",
+                    "WEBGL_compressed_texture_etc",
+                    "WEBGL_compressed_texture_etc1",
+                    "WEBGL_compressed_texture_pvrtc",
+                    "WEBGL_compressed_texture_s3tc",
+                    "WEBGL_compressed_texture_s3tc_srgb",
+                    "WEBGL_debug_renderer_info",
+                    "WEBGL_debug_shaders",
+                    "WEBGL_depth_texture",
+                    "WEBGL_draw_buffers",
+                    "WEBGL_lose_context",
+                    "WEBGL_multi_draw"
+                ];*/
+
+                var glext = [
+                    "ANGLE_instanced_arrays",
+                    "EXT_blend_minmax",
+                    "EXT_color_buffer_float",
+                    "EXT_color_buffer_half_float",
+                    "EXT_disjoint_timer_query",
+                    "EXT_float_blend",
+                    "EXT_frag_depth",
+                    "EXT_shader_texture_lod",
+                    "EXT_sRGB",
+                    "EXT_texture_compression_bptc",
+                    "EXT_texture_compression_rgtc",
+                    "EXT_texture_filter_anisotropic",
+                    "EXT_texture_norm16",
+                    "KHR_parallel_shader_compile",
+                    "OES_element_index_uint",
+                    "OES_fbo_render_mipmap",
+                    "OES_standard_derivatives",
+                    "OES_texture_float",
+                    "OES_texture_float_linear",
+                    "OES_texture_half_float",
+                    "OES_texture_half_float_linear",
+                    "OES_vertex_array_object",
+                    "OVR_multiview2",
+                    "WEBGL_color_buffer_float",
+                    "WEBGL_compressed_texture_astc",
+                    "WEBGL_compressed_texture_atc",
+                    "WEBGL_compressed_texture_etc",
+                    "WEBGL_compressed_texture_etc1",
+                    "WEBGL_compressed_texture_pvrtc",
+                    "WEBGL_compressed_texture_s3tc",
+                    "WEBGL_compressed_texture_s3tc_srgb",
+                    "WEBGL_debug_renderer_info",
+                    "WEBGL_debug_shaders",
+                    "WEBGL_depth_texture",
+                    "WEBGL_draw_buffers",
+                    "WEBGL_lose_context",
+                    "WEBGL_multi_draw",
+                    "ANGLE_instanced_arrays",
+                    "EXT_blend_minmax",
+                    "EXT_clip_cull_distance",
+                    "EXT_color_buffer_float",
+                    "EXT_color_buffer_half_float",
+                    "EXT_disjoint_timer_query",
+                    "EXT_disjoint_timer_query_webgl2",
+                    "EXT_float_blend",
+                    "EXT_frag_depth",
+                    "EXT_shader_texture_lod",
+                    "EXT_sRGB",
+                    "EXT_texture_filter_anisotropic",
+                    "EXT_texture_storage",
+                    "OES_depth24",
+                    "OES_element_index_uint",
+                    "OES_fbo_render_mipmap",
+                    "OES_standard_derivatives",
+                    "OES_texture_float",
+                    "OES_texture_float_linear",
+                    "OES_texture_half_float",
+                    "OES_texture_half_float_linear",
+                    "OES_vertex_array_object",
+                    "WEBGL_color_buffer_float",
+                    "WEBGL_compressed_texture_astc",
+                    "WEBGL_compressed_texture_atc",
+                    "WEBGL_compressed_texture_etc",
+                    "WEBGL_compressed_texture_etc1",
+                    "WEBGL_compressed_texture_pvrtc",
+                    "WEBGL_compressed_texture_s3tc",
+                    "WEBGL_compressed_texture_s3tc_srgb",
+                    "WEBGL_debug",
+                    "WEBGL_debug_renderer_info",
+                    "WEBGL_debug_shader_precision",
+                    "WEBGL_debug_shaders",
+                    "WEBGL_depth_texture",
+                    "WEBGL_draw_buffers",
+                    "WEBGL_draw_elements_no_range_check",
+                    "WEBGL_dynamic_texture",
+                    "WEBGL_get_buffer_sub_data_async",
+                    "WEBGL_lose_context",
+                    "WEBGL_multiview",
+                    "WEBGL_security_sensitive_resources",
+                    "WEBGL_shared_resources",
+                    "WEBGL_subarray_uploads",
+                    "WEBGL_subscribe_uniform",
+                    "WEBGL_texture_from_depth_video",
+                    "WEBGL_texture_multisample",
+                    "WEBGL_texture_source_iframe",
+                    "WEBGL_video_texture"
+                ];
+                /*var glext = [
+                    "ANGLE_instanced_arrays",
+                    "EXT_blend_minmax",
+                    "EXT_clip_cull_distance",
+                    "EXT_color_buffer_float",
+                    "EXT_color_buffer_half_float",
+                    "EXT_disjoint_timer_query",
+                    "EXT_disjoint_timer_query_webgl2",
+                    "EXT_float_blend",
+                    "EXT_frag_depth",
+                    "EXT_shader_texture_lod",
+                    "EXT_sRGB",
+                    "EXT_texture_filter_anisotropic",
+                    "EXT_texture_storage",
+                    "OES_depth24",
+                    "OES_element_index_uint",
+                    "OES_fbo_render_mipmap",
+                    "OES_standard_derivatives",
+                    "OES_texture_float",
+                    "OES_texture_float_linear",
+                    "OES_texture_half_float",
+                    "OES_texture_half_float_linear",
+                    "OES_vertex_array_object",
+                    "WEBGL_color_buffer_float",
+                    "WEBGL_compressed_texture_astc",
+                    "WEBGL_compressed_texture_atc",
+                    "WEBGL_compressed_texture_etc",
+                    "WEBGL_compressed_texture_etc1",
+                    "WEBGL_compressed_texture_pvrtc",
+                    "WEBGL_compressed_texture_s3tc",
+                    "WEBGL_compressed_texture_s3tc_srgb",
+                    "WEBGL_debug",
+                    "WEBGL_debug_renderer_info",
+                    "WEBGL_debug_shader_precision",
+                    "WEBGL_debug_shaders",
+                    "WEBGL_depth_texture",
+                    "WEBGL_draw_buffers",
+                    "WEBGL_draw_elements_no_range_check",
+                    "WEBGL_dynamic_texture",
+                    "WEBGL_get_buffer_sub_data_async",
+                    "WEBGL_lose_context",
+                    "WEBGL_multiview",
+                    "WEBGL_security_sensitive_resources",
+                    "WEBGL_shared_resources",
+                    "WEBGL_subarray_uploads",
+                    "WEBGL_subscribe_uniform",
+                    "WEBGL_texture_from_depth_video",
+                    "WEBGL_texture_multisample",
+                    "WEBGL_texture_source_iframe",
+                    "WEBGL_video_texture"];*/
+
+                log(LOG_DEBUG, "[WebGL] Trying " + glext.length + " extensions");
+
+                var cnt = 0;
+                var exts = 0;
+                for (j in glext) {
+                    var ext = gl.getExtension(glext[j]);
+                    if (ext != null) {
+                        exts++;
+                        window.wgl[glext[j]] = {}
+                        for (var i in ext) {
+                            try {
+                                window.wgl[glext[j]][i] = gl.getParameter(ext[i]);
+                                cnt++;
+                            } catch (e) {
+                            }
+                        }
+                    }
+                }
+                log(LOG_DEBUG, "[WebGL] " + exts + " extensions found");
+                log(LOG_DEBUG, "[WebGL] " + cnt + " properties found");
+            } else {
+                log(LOG_WARNING, "[WebGL] Could not instantiate WebGL");
+            }
+        }
+
+        /****************************
+         Bruteforce routine
+         *****************************/
+        function bruteforce(root_name, func) {
+            functionCounter++;//TODO ???
+            let result = runFunc(root_name, func, func);
+            let firstErr = null;
+
+            if(result) {
+                if(result.success) {
+                    result['firstErr'] = firstErr;
+                    return result;
+                } else {
+                    if(result.skip) {
+                        skippedFunctions++;
+                        return;
+                    }
+                    if(result.message.includes(' is not a function')) {
+                        notAFunction++;
+                        return;//Return nothing so we can skip normal properties
+                    }
+
+
+                    firstErr = result.message;
+
+                    let oracle = argOracle(func,result.message);
+                    let bfArgs = bruteforceArgs(func, oracle.execString, oracle.argCount, root_name);
+
+                    if(bfArgs.skip) {
+                        skippedFunctions++;
+                        return;
+                    }
+
+                    if(bfArgs.success)
+                        savedParams[func] = bfArgs.args;
+
+                    bfArgs['firstErr'] = firstErr;
+                    return bfArgs;
+                }
+            } else {
+                console.error('Result not defined at ' + func + '. Should not happen!');
+                return {
+                    success: false,
+                    message: 'Result not defined. Error!',
+                    firstErr: null,
+                    exec: null,
+                    args: null,
+                    diff: null,
+                    diffTime: 0,
+                    time: null
+                };
+            }
+        }
+        /****************************
+         Run Functions
+         *****************************/
+        function runFunc(root_name, func, execString, argString='') {
+            let funcStart = window.performance.now();
+            let funcEnd = 0;
+            let diff = {};
+
+            let mString;
+            try {
+                let result = eval(execString + '(' + argString + ')');
+
+                if(JSON.stringify(result) === "{}") {
+                       let objScan = {};
+                       let allProp = listAllProperties(result);
+                       for(let a of allProp) {
+                           objScan[a] = result[a];
+                       }
+                       mString = JSON.stringify(objScan);
+                } else {
+                   mString = JSON.stringify(result);
+                }
+
+                funcEnd = window.performance.now();
+                diff = findDiff(root_name);
+                let diffTime = window.performance.now() - funcEnd;
+
+                //Unterschiede die nur den Sourcecode wiedergeben werden übersprungen. Hier werden oft einfach nur '5'en angehangen
+                if(JSON.stringify(diff).includes("cript Template Attack")) {
+                    return {
+                        success: false,
+                        skip: true
+                    };
+                }
+
+                return {
+                    success: true,
+                    message: mString,
+                    exec: execString,
+                    args: argString,
+                    diff: diff,
+                    diffTime: diffTime,
+                    time: funcEnd - funcStart
+                };
+            } catch(e) {
+                funcEnd = window.performance.now();
+                mString = e.message.toString();
+                return {
+                    success: false,
+                    message: mString,
+                    exec: execString,
+                    args: argString,
+                    diff: diff,
+                    diffTime: 0,
+                    time: funcEnd - funcStart
+                };
+            }
+        }
+
+        /****************************
+         test
+         *****************************/
+        function test(root_name) {
+            log(LOG_INFO, "Waiting for browser identifier\n");
+
+            let ident = null;
+            let successfulCount = 0;
+
+            notAFunction = 0;
+
+            if (document.location.hash.indexOf("#") != -1) {
+                ident = (document.location.hash.substr(1).replace(/-/g, "="));
+                if (ident == "auto") {
+                    ident = navigator.userAgent;
+                } else {
+                    ident = atob(ident);
+                }
+            }
+            if (ident == null) ident = prompt("Browser Identifier?", navigator.userAgent);
+            if (!(ident == undefined || ident == null || ident.length == 0)) {
+                log(LOG_INFO, "Adding properties to profile \"" + ident + "\"");
+                log(LOG_INFO, "Running blind scan to 'populate' environment");
+
+                add_webgl();
+
+                /****************************
+                 0th Hook: Before first scan
+                 ****************************/
+                window.document.title = '0';
+                start = window.performance.now();
+                let temp = {};
+                let t_root = eval(root_name);
+
+                window.document.title = '0 Before scan';
+                scan(t_root, root_name, temp, 0);
+                window.document.title = '0 after scan';
+
+                let it;
+                for (it in temp) {
+                    if(skipFunc(it)) {
+                        continue;
+                    }
+
+
+                    bruteforce(false,it);
+
+                    if(checkBroken(it))
+                        return;
+                }
+                log(LOG_INFO,'Finished blind scan.');
+
+                let end0 = window.performance.now();
+
+                temp = undefined;//Test for clearing up space
+
+                /****************************
+                 1st Hook: First scan
+                 *****************************/
+                window.document.title = '1';
+                let start1 = window.performance.now();
+                log(LOG_INFO, "Start collecting properties at root \"" + root_name + "\"");
+                let root = eval(root_name);
+                log(LOG_DEBUG, "Root object: " + root);
+
+                let baseEnv = {};
+                let fp = {};
+
+                let item;
+                let result;
+                let funcCount = 0;
+                notAFunction = 0;
+                functionCounter = 0;
+
+                scan(root, root_name, baseEnv, 0);
+                window.document.title = '1 after scan';
+
+                envBefore = baseEnv;
+
+                let bruteforceTime = 0;
+                let bruteforceStopTime = 0;
+                for(item in baseEnv) {
+                    funcCount++;
+                    if(skipFunc(item)) {
+                        continue;
+                    }
+
+                    bruteforceTime = window.performance.now();
+                    result = bruteforce(root_name, item);
+                    bruteforceStopTime = window.performance.now();
+
+                    if(checkBroken(item))
+                        return;
+
+                    if(result) {
+                        if(result.success) {
+                            successfulCount++;
+                        }
+                        fp[item] = {};
+                        fp[item]['value'] = result.message;
+                        fp[item]['firstErr'] = result.firstErr;
+                        fp[item]['diff'] = result.diff;
+                        fp[item]['exec'] = result.exec;
+                        fp[item]['args'] = result.args;
+                        fp[item]['success'] = result.success;
+                        fp[item]['time'] = result.time;
+                        fp[item]['bruteforceTime'] = (bruteforceStopTime - bruteforceTime) - result.diffTime;
+                        //log(LOG_ERROR,';' + item + ';' + result.exec + ';' + result.args + ';' + result.message + ';' + JSON.stringify(result.diff) + ';' + result.success);
+                    } else {
+                        //result==null is not a function
+                        continue;
+                    }
+                }
+
+                let end1 = window.performance.now();
+
+
+                log(LOG_DEBUG, "First run done");
+                let scan1 = JSON.parse(JSON.stringify(fp));
+                log(LOG_INFO, "First run saved, waiting 2 seconds for next run");
+
+                let prop1 = 0;
+                for (let i in fp)
+                    prop1++;
+                log(LOG_RESULT, "Found " + prop1 + " properties");
+                log(LOG_RESULT, successfulCount + " successful executions");
+                log(LOG_WARNING, skippedFunctions + " skipped functions");
+                //log(LOG_RESULT, "Duplicates: " + dups);//TODO ???
+                log(LOG_DEBUG, "-------------RUN2-------------");
+
+                /****************************
+                 2nd Hook: Second scan
+                 *****************************/
+
+                fp = {};
+
+                window.setTimeout(function() {
+                    window.document.title = '2';
+                	let start2 = window.performance.now();
+                    dups = 0;
+                    log(LOG_DEBUG, "Root object: " + root);
+                    log(LOG_INFO, "Starting second run");
+
+                    scan(root,root_name,envBefore,0);
+                    window.document.title = '2 after scan';
+                    //No second scan for execution! We are working with the base scan (baseEnv) to find the differences between
+                    //two executions
+                    //envBefore is used for findDiff
+
+                    //Resetting counter
+                    skippedFunctions = 0;
+                    successfulCount = 0;
+                    notAFunction = 0;
+                    functionCounter = 0;
+                    funcCount = 0;
+                    for(item in baseEnv) {
+                        funcCount++;
+                        if(skipFunc(item)) {
+                            continue;
+                        }
+
+                        bruteforceTime = window.performance.now();
+                        result = bruteforce(root_name, item);
+                        bruteforceStopTime = window.performance.now();
+
+                        if(checkBroken(item))
+                            return;
+
+                        if(result) {
+                            if(result.success) {
+                                successfulCount++;
+                            }
+                            fp[item] = {};
+                            fp[item]['value'] = result.message;
+                            fp[item]['firstErr'] = result.firstErr;
+                            fp[item]['diff'] = result.diff;
+                            fp[item]['exec'] = result.exec;
+                            fp[item]['args'] = result.args;
+                            fp[item]['success'] = result.success;
+                            fp[item]['time'] = result.time;
+                            fp[item]['bruteforceTime'] = (bruteforceStopTime - bruteforceTime) - result.diffTime;
+                            //log(LOG_ERROR,';' + item + ';' + result.exec + ';' + result.args + ';' + result.message + ';' + JSON.stringify(result.diff) + ';' + result.success);
+                        } else {
+                            continue;
+                        }
+                    }
+                    window.document.title = '2 after bruteforce';
+
+                    let end2 = window.performance.now();
+
+                    log(LOG_DEBUG, "Second run done");
+                    let scan2 = JSON.parse(JSON.stringify(fp));
+                    log(LOG_INFO, "Second run saved");
+
+                    let prop2 = 0;
+                    for (let i in fp)
+                        prop2++;
+                    log(LOG_RESULT, "Found " + prop2 + " properties");
+                    log(LOG_RESULT, successfulCount + " successful executions");
+                    log(LOG_WARNING, skippedFunctions + " skipped functions");
+                    //log(LOG_RESULT, "Duplicates: " + dups);//TODO ???
+                    if (prop1 != prop2) {
+                        let diff = Math.abs(prop1 - prop2);
+                        log(LOG_WARNING, "Weird, " + diff + (prop2 > prop1 ? " additional " : " missing ") +
+                            "propert" + (diff == 1 ? "y" : "ies"));
+                    }
+
+                    //Try to clean up space
+                    fp = undefined;
+                    envBefore = undefined;
+                    baseEnv = undefined;
+
+
+                    //get differences
+                    logconsole+='<br/>';
+                    log(LOG_INFO, "Remove unstable properties");
+                    var l = 0;
+                    var rem = 0, usable = 0;
+                    var ok = {};
+                    for (let k in scan1) {
+                        l++;
+
+                        if(JSON.stringify(scan1[k]['value']) === JSON.stringify(scan2[k]['value'])) {
+                            ok[k] = {};
+
+                            //Success
+                            ok[k]['success'] = scan1[k]['success'];
+
+                            //Result
+                            if(scan1[k]['value']==undefined)
+                                ok[k]['result'] = "undefined";
+                            else
+                                ok[k]['result'] = scan1[k]['value'];
+
+                            //First error message
+                            ok[k]['firstErr'] = [];
+                            ok[k]['firstErr'][0] = scan1[k]['firstErr'];
+                            ok[k]['firstErr'][1] = scan2[k]['firstErr'];
+
+                            //Signature
+                            ok[k]['signature'] = [];
+                            if(scan1[k]['success']) {
+                                ok[k]['signature'][0] = scan1[k]['exec'] + '(' + scan1[k]['args'] + ')';
+                                ok[k]['signature'][1] = scan2[k]['exec'] + '(' + scan2[k]['args'] + ')';
+                            } else {
+                                ok[k]['signature'][0] = scan1[k]['exec'] + '()';
+                                ok[k]['signature'][1] = scan2[k]['exec'] + '()';
+                            }
+
+                            //Differences in environment
+                            ok[k]['diff'] = [];
+                            ok[k]['diff'][0] = JSON.stringify(scan1[k]['diff']);
+                            ok[k]['diff'][1] = JSON.stringify(scan2[k]['diff']);
+
+                            //Time
+                            ok[k]['time'] = [];
+                            ok[k]['time'][0] = scan1[k]['time'];
+                            ok[k]['time'][1] = scan2[k]['time'];
+                            ok[k]['timeAvg'] = (scan1[k]['time'] + scan2[k]['time']) / 2;
+                            ok[k]['bruteforceTime'] = [];
+                            ok[k]['bruteforceTime'][0] = scan1[k]['bruteforceTime'];
+                            ok[k]['bruteforceTime'][1] = scan2[k]['bruteforceTime'];
+                            ok[k]['bruteforceTimeAvg'] = (scan1[k]['bruteforceTime'] + scan2[k]['bruteforceTime']) / 2;
+
+
+                            usable++;
+                        } else {
+                            rem++;
+                        }
+                        //Try to clean up space
+                        scan1[k] = undefined;
+                        scan2[k] = undefined;
+                    }
+                    document.getElementById("log").innerHTML = logconsole;
+                    log(LOG_RESULT, rem + " propert" + (rem == 1 ? "y" : "ies") + " removed due to difference between scans");
+                    log(LOG_RESULT, usable + " usable propert" + (usable == 1 ? "y" : "ies"));
+
+                    console.log(l);
+
+                    let runAll = ((window.performance.now() - start)/1000);
+                    let run0 = ((end0 - start)/1000);
+                    let run1 = ((end1 - start1)/1000);
+                    let run2 = ((end2 - start2)/1000);
+
+                    log(LOG_RESULT, "JavaScript Template Attack took " + runAll + " seconds (" + runAll/60 + " minutes)");
+                    log(LOG_RESULT, "Run0 " + run0 + " seconds (" + run0/60 + " minutes)");
+                    log(LOG_RESULT, "Run1 " + run1 + " seconds (" + run1/60 + " minutes)");
+                    log(LOG_RESULT, "Run2 " + run2 + " seconds (" + run2/60 + " minutes)");
+
+                    log(LOG_INFO, "Send properties to server...");
+                    let oReq = new XMLHttpRequest();
+                    oReq.addEventListener("load", function() {
+                        window.document.title = ident;
+                        log(LOG_INFO, "Done!");
+                        log(LOG_RESULT, "<a id='downloader'>[ Download ]</a>");
+                        log(LOG_RESULT, "<a href='/'>[ Home ]</a> for profile overview");
+
+                        document.getElementById("log").innerHTML = logconsole;
+
+                        //Adding download button
+                        let downloader = document.getElementById("downloader");
+                        downloader.setAttribute('href', 'data:applica9tion/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(ok)));
+                        downloader.setAttribute('download', ident+'.json');
+                    });
+                    oReq.open("POST", document.location.protocol + "//" + document.location.host + "/log", true);
+                    oReq.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
+                    oReq.send("log=" + encodeURIComponent(btoa(unescape(encodeURIComponent(JSON.stringify(ok)))).replace(/=/g, "-")) + "&ident=" + ident);
+                }, 2000);
+            } else {
+                log(LOG_ERROR, "User aborted!");
+            }
+        }
+
+        function listAllProperties(o) {
+            var result = [];
+            while (o !== null) {
+                result = result.concat(Reflect.ownKeys(o));
+                o = Object.getPrototypeOf(o);
+            }
+
+            return result;
+        }
+
+        function scan(root, root_name, fp, depth) {
+            var rem_roots = [];
+            var scanned_roots = [];
+            var hashes = [];
+
+            var m_depth = 0;
+            do {
+                var len = 0;
+                var keys = listAllProperties(root);
+                for (var k in keys) {
+                    try {
+                        var p = keys[k];
+                        len++;
+                        var logged = false;
+
+                        if (!(p in root)) continue;
+                        try {
+                            var type = typeof (root[p]);
+                        } catch (e) {
+                            continue;
+                        }
+
+                        if (type == "function" && root[p] != null && !Array.isArray(root[p])) {
+                            try {
+                                fp[root_name + "." + p] = root[p].toString();
+                                logged = true;
+                            } catch (ex) {
+                            }
+                        }
+
+                        if (type == "object") {
+                            var dup = scanned_roots.indexOf(root[p]) > -1;
+                            if (!dup && check_hashes) {
+                                h = hash(root[p]);
+                                if (hashes.indexOf(h) > -1) dup = true;
+                            }
+                            if (dup) {
+                                dups++;
+                                continue;
+                            }
+                            if (check_hashes) hashes.push(h);
+                            scanned_roots.push(root[p]);
+                        }
+
+                        if (type == "number" || type == "string" || type == "boolean") {
+                            logged = true;
+                            try {
+                                fp[root_name + "." + p] = root[p];
+                            } catch (e) {
+                            }
+                        }
+
+
+                        if ((type == "object" && root[p] != null && root[p] !== undefined) || Array.isArray(root[p])) {
+                            if (depth < max_depth) {
+                                try {
+                                    rem_roots.push({"elem": root[p], "name": root_name + "." + p, "depth": depth + 1});
+                                    logged = true;
+                                } catch (ex) {
+                                }
+                            }
+                        }
+                    } catch (ex) {
+                    }
+                }
+                fp[root_name + "._length"] = len;
+                var next;
+                do {
+                    next = rem_roots.pop();
+                } while (next === undefined && rem_roots.length > 0);
+                if (next === undefined) break;
+                root = next.elem;
+                root_name = next.name;
+                depth = next.depth;
+                if (depth > m_depth) m_depth = depth;
+            } while (rem_roots.length > 0);
+            //if (m_depth == max_depth) log(LOG_WARNING, "Maximum depth reached, maybe aborted");
+        }
+
+        window.setTimeout(function () {
+            test(target);
+        }, 1000);
+
+    })("window");
+</script>
+</body>
+</html>
